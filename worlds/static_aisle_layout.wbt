@@ -178,5 +178,5 @@ TurtleBot3Burger {
 Robot {
   name "grid_supervisor"
   supervisor TRUE
-  controller "generate_grid"
+  controller "<none>"
 }
