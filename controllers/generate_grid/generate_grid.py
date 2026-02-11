@@ -2,6 +2,7 @@ from controller import Supervisor
 import numpy as np
 from scipy.ndimage import binary_dilation
 import os
+import math
 
 # ================= CONFIG =================
 RESOLUTION = 0.1
@@ -18,13 +19,14 @@ timestep = int(sup.getBasicTimeStep())
 
 width  = int((X_MAX - X_MIN) / RESOLUTION)
 height = int((Z_MAX - Z_MIN) / RESOLUTION)
-grid = np.zeros((width, height), dtype=np.uint8)
+
+# FIX 1: grid should be [z, x], not [x, z]
+grid = np.zeros((height, width), dtype=np.uint8)
 
 def world_to_grid(x, z):
-    return (
-        int((x - X_MIN) / RESOLUTION),
-        int((z - Z_MIN) / RESOLUTION)
-    )
+    gx = int((x - X_MIN) / RESOLUTION)
+    gz = int((z - Z_MIN) / RESOLUTION)
+    return gx, gz
 
 # ---------- MANUAL SHELF DEFINITIONS ----------
 # (x, z, size_x, size_z)
@@ -41,7 +43,7 @@ SHELVES = [
     (-4, -7.5, 6, 1),
 ]
 
-# Rasterize shelves
+# ---------- Rasterize shelves ----------
 for x, z, sx, sz in SHELVES:
     x_min = x - sx / 2
     x_max = x + sx / 2
@@ -51,22 +53,29 @@ for x, z, sx, sz in SHELVES:
     gx0, gz0 = world_to_grid(x_min, z_min)
     gx1, gz1 = world_to_grid(x_max, z_max)
 
-    for gx in range(max(0, gx0), min(width, gx1)):
-        for gz in range(max(0, gz0), min(height, gz1)):
-            grid[gx, gz] = 1
+    # FIX 2: include boundary cells (+1)
+    for gx in range(max(0, gx0), min(width, gx1 + 1)):
+        for gz in range(max(0, gz0), min(height, gz1 + 1)):
+            grid[gz, gx] = 1   # FIX 3: correct indexing
 
-# Arena boundaries
+# ---------- Arena boundaries ----------
 grid[0, :] = 1
 grid[-1, :] = 1
 grid[:, 0] = 1
 grid[:, -1] = 1
 
-# Inflate obstacles
-inflation_cells = int(INFLATION_RADIUS / RESOLUTION)
-kernel = np.ones((2*inflation_cells+1, 2*inflation_cells+1))
-grid = binary_dilation(grid, structure=kernel)
+# ---------- Inflate obstacles ----------
+# FIX 4: use ceil, not int
+inflation_cells = math.ceil(INFLATION_RADIUS / RESOLUTION)
 
-# Save
+kernel = np.ones(
+    (2 * inflation_cells + 1,
+     2 * inflation_cells + 1)
+)
+
+grid = binary_dilation(grid, structure=kernel).astype(np.uint8)
+
+# ---------- Save ----------
 save_dir = os.path.abspath(os.path.join(os.getcwd(), "../../data/maps"))
 os.makedirs(save_dir, exist_ok=True)
 save_path = os.path.join(save_dir, "aisle_grid.npy")

@@ -11,7 +11,7 @@ os.makedirs(output_dir, exist_ok=True)
 
 # Plot
 plt.figure(figsize=(6, 6))
-plt.imshow(grid.T, origin="lower", cmap="Blues")
+plt.imshow(grid, origin="lower", cmap="Blues")
 plt.title("Aisle Layout Occupancy Grid")
 plt.xlabel("X cells")
 plt.ylabel("Z cells")
