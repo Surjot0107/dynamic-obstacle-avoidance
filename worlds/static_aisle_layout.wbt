@@ -3,12 +3,13 @@
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/RectangleArena.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/solids/protos/SolidBox.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/robotis/turtlebot/protos/TurtleBot3Burger.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/appearances/protos/Parquetry.proto"
 
 WorldInfo {
 }
 Viewpoint {
-  orientation 0.038287474787540944 0.9816778942145592 -0.18666167599392824 0.4118897390951796
-  position -26.276962663148744 -1.3583032695553232 14.033380265173593
+  orientation 0.5995543040562794 0.5952785514799506 -0.5349561501988013 2.165089930659733
+  position -0.46668629885142643 -4.401929631802205 25.41559863687087
 }
 Background {
   skyColor [
@@ -21,6 +22,10 @@ DirectionalLight {
 }
 RectangleArena {
   floorSize 20 20
+  floorAppearance Parquetry {
+    type "light strip"
+    colorOverride 0.947005 0.838483 0.699229
+  }
   wallHeight 2
 }
 SolidBox {
@@ -172,11 +177,10 @@ SolidBox {
     metalness 0
   }
 }
-TurtleBot3Burger {
+DEF TURTLEBOT3 TurtleBot3Burger {
 }
-
 Robot {
   name "grid_supervisor"
-  supervisor TRUE
   controller "<none>"
+  supervisor TRUE
 }
