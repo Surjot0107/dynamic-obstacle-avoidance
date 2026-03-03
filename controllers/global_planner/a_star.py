@@ -28,9 +28,15 @@ class AStarPlanner:
 
         came_from = {}
         g_cost = {start: 0.0}
+        closed_set = set()
 
         while open_set:
             _, current = heapq.heappop(open_set)
+
+            if current in closed_set:
+                continue
+
+            closed_set.add(current)
 
             if current == goal:
                 return self._reconstruct_path(came_from, current)
@@ -42,6 +48,12 @@ class AStarPlanner:
                     continue
                 if not self.is_free(neighbor):
                     continue
+
+                # Prevent corner cutting
+                if abs(dr) == 1 and abs(dc) == 1:
+                    if not (self.is_free((current[0] + dr, current[1])) and
+                            self.is_free((current[0], current[1] + dc))):
+                        continue
 
                 step_cost = math.hypot(dr, dc)
                 new_cost = g_cost[current] + step_cost
