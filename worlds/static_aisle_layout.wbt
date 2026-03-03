@@ -178,6 +178,7 @@ SolidBox {
   }
 }
 DEF TURTLEBOT3 TurtleBot3Burger {
+  supervisor TRUE
 }
 Robot {
   name "grid_supervisor"
