@@ -54,8 +54,8 @@ for z, x in plan:
 path_world = np.array(path_world)
 
 
-print("First path points:")
-print(path_world[:5])
+# print("First path points:")
+# print(path_world[:5])
 
 
 # TELEPORT ROBOT TO START
@@ -68,7 +68,7 @@ dy = next_pt[1] - start[1]
 yaw = math.atan2(dy, dx)
 
 translation_field.setSFVec3f([start[0], start[1], 0.01])
-rotation_field.setSFRotation([0, 0, 1, yaw])
+rotation_field.setSFRotation([0, 0, 1, 0])
 
 robot.step(TIME_STEP)
 
@@ -115,7 +115,7 @@ def get_lidar_points(x, y, yaw):
         if r == float("inf") or r > 3.5:
             continue
 
-        angle = -fov / 2 + i * angle_increment
+        angle = fov / 2 - i * angle_increment
 
         world_angle = yaw + angle
 
@@ -152,17 +152,17 @@ while robot.step(TIME_STEP) != -1:
     goal_index = min(path_index + LOOKAHEAD, len(path_world) - 1)
 
     goal = path_world[goal_index]
-    # print("GOAL:", goal)
+    print("GOAL:", goal, "INDEX:",goal_index)
 
     dist = math.hypot(goal[0] - x, goal[1] - y)
 
-    if dist < 0.15 and path_index < len(path_world) - 1:
+    if dist < 0.35 and path_index < len(path_world) - 1:
         path_index += 1
 
     state = [x, y, yaw, current_v, current_w]
 
     v_cmd, w_cmd, trajectories = dwa.plan(state, goal, obstacles)
-    print("CMD:", round(v_cmd,2), round(w_cmd,2))
+    # print("CMD:", round(v_cmd,2), round(w_cmd,2))
 
     plot_dwa_debug([x, y], goal, obstacles, trajectories)
 

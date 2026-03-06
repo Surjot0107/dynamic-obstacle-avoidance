@@ -16,7 +16,7 @@ class DWAPlanner:
         v_res=0.1,
         w_res=0.15,
         dt=0.1,
-        predict_time=2.0,
+        predict_time=2.5,
     ):
         """
         DWA parameter initialization
