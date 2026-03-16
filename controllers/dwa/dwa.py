@@ -15,6 +15,8 @@ LOOKAHEAD_DIST = 1.5  # metres ahead on path to place the carrot
 
 
 robot = Supervisor()
+camera = robot.getDevice("camera")
+camera.enable(TIME_STEP)
 
 left_motor = robot.getDevice("left wheel motor")
 right_motor = robot.getDevice("right wheel motor")
@@ -65,10 +67,11 @@ robot.step(TIME_STEP)
 
 # ── State ─────────────────────────────────────────────────────────────────────
 closest_index = 0
-dwa           = DWAPlanner()
+dwa = DWAPlanner()
 current_v = 0.0
 current_w = 0.0
 collision_count = 0
+in_collision = False  # tracks if we are currently in a collision event
 
 
 def get_robot_pose():
@@ -83,7 +86,7 @@ def get_lidar_points(x, y, yaw):
     angle_increment = fov / (len(ranges) - 1)
     obstacles = []
     for i, r in enumerate(ranges):
-        if r == float("inf") or r > 2.0:
+        if r == float("inf") or r > 3.0:
             continue
         angle = fov / 2 - i * angle_increment
         world_angle = yaw + angle
@@ -129,13 +132,13 @@ while robot.step(TIME_STEP) != -1:
             print("GOAL REACHED")
             break
 
-    # Collision check — any contact point above floor level (z > 0.01)
-    # is a wall or obstacle, not the floor.
+    # Collision detection — count distinct events, not frames.
+    # A new collision is only counted when contact starts (not while dragging).
     contact_points = robot_node.getContactPoints(includeDescendants=True)
-    for cp in contact_points:
-        if cp.point[2] > 0.01:
-            collision_count += 1
-            break
+    currently_touching = any(cp.point[2] > 0.01 for cp in contact_points)
+    if currently_touching and not in_collision:
+        collision_count += 1  # new collision event started
+    in_collision = currently_touching
     state = [x, y, yaw, current_v, current_w]
     v_cmd, w_cmd, trajectories = dwa.plan(state, goal, obstacles)
 
