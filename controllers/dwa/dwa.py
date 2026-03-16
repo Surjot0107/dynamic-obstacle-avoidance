@@ -1,10 +1,17 @@
 from controller import Supervisor
 import numpy as np
 import math
+import json
+import time
+import os
+import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from dwa_core import DWAPlanner
 from debug_plot import plot_dwa_debug
 
+DEBUG_GRAPH = False
 
 TIME_STEP = 64
 MAX_SPEED = 6.28
@@ -73,6 +80,60 @@ current_w = 0.0
 collision_count = 0
 in_collision = False  # tracks if we are currently in a collision event
 
+# ── Logging ───────────────────────────────────────────────────────────────────
+RUN_NOTES = ""  # set before each run e.g. "3 static boxes, run 1"
+BASE_LOG_DIR = "../../results/dwa"
+os.makedirs(BASE_LOG_DIR, exist_ok=True)
+
+# Auto-increment run number
+existing = [int(d[-3:]) for d in os.listdir(BASE_LOG_DIR) if d.startswith("run_")]
+if existing != []:
+    run_number = int(max(existing)) + 1
+else:
+    run_number = 1
+LOG_DIR = os.path.join(BASE_LOG_DIR, f"run_{run_number:03d}")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+run_start_time = robot.getTime()
+path_taken = []
+distance_travelled = 0.0
+prev_x, prev_y = None, None
+goal_reached = False
+
+
+def save_log(success):
+    elapsed = round(robot.getTime() - run_start_time, 2)
+    log = {
+        "run_number": run_number,
+        "success": success,
+        "time_to_goal_s": elapsed if success else None,
+        "total_distance_m": round(distance_travelled, 3),
+        "collision_count": collision_count,
+        "notes": RUN_NOTES,
+        "path_taken": [[round(p[0], 3), round(p[1], 3)] for p in path_taken],
+    }
+    json_path = os.path.join(LOG_DIR, "log.json")
+    with open(json_path, "w") as f:
+        json.dump(log, f, indent=2)
+    print(f"Log saved: {json_path}")
+    fig = Figure(figsize=(8, 8))
+    FigureCanvasAgg(fig)
+    ax = fig.add_subplot(111)
+    ax.plot(path_world[:, 0], path_world[:, 1], "b--", linewidth=1, label="A* path")
+    if len(path_taken) > 1:
+        taken = np.array(path_taken)
+        ax.plot(taken[:, 0], taken[:, 1], "r-", linewidth=1.5, label="Travelled path")
+    ax.plot(path_world[0, 0], path_world[0, 1], "go", markersize=8, label="Start")
+    ax.plot(path_world[-1, 0], path_world[-1, 1], "r*", markersize=12, label="Goal")
+    ax.set_title(f"DWA Run {run_number:03d} | {'SUCCESS' if success else 'FAILED'} | "
+                 f"Collisions: {collision_count} | Dist: {round(distance_travelled,2)}m")
+    ax.set_aspect("equal")
+    ax.legend()
+    ax.grid(True)
+    plot_path = os.path.join(LOG_DIR, "path_plot.png")
+    fig.savefig(plot_path, dpi=150, bbox_inches="tight")
+    print(f"Plot saved: {plot_path}")
+
 
 def get_robot_pose():
     pos = robot_node.getPosition()
@@ -115,41 +176,53 @@ def get_carrot(x, y):
     return path_world[carrot_index], carrot_index
 
 
-while robot.step(TIME_STEP) != -1:
+try:
+    while robot.step(TIME_STEP) != -1:
 
-    x, y, yaw = get_robot_pose()
+        x, y, yaw = get_robot_pose()
+        path_taken.append([x, y])
+        if prev_x is not None:
+            distance_travelled += math.hypot(x - prev_x, y - prev_y)
+        prev_x, prev_y = x, y
 
-    obstacles = get_lidar_points(x, y, yaw)
+        obstacles = get_lidar_points(x, y, yaw)
 
-    goal, goal_index = get_carrot(x, y)
-    print("CLOSEST:", closest_index, "  CARROT:", goal_index,
-          " GOAL:", np.round(goal, 2), " COLLISIONS:", collision_count)
+        goal, goal_index = get_carrot(x, y)
+        print("CLOSEST:", closest_index, "  CARROT:", goal_index,
+              " GOAL:", np.round(goal, 2), " COLLISIONS:", collision_count)
 
-    if goal_index >= len(path_world) - 1:
-        if math.hypot(path_world[-1][0] - x, path_world[-1][1] - y) < 0.3:
-            left_motor.setVelocity(0.0)
-            right_motor.setVelocity(0.0)
-            print("GOAL REACHED")
-            break
+        if goal_index >= len(path_world) - 1:
+            if math.hypot(path_world[-1][0] - x, path_world[-1][1] - y) < 0.3:
+                left_motor.setVelocity(0.0)
+                right_motor.setVelocity(0.0)
+                print("GOAL REACHED")
+                goal_reached = True
+                save_log(success=True)
+                break
 
-    # Collision detection — count distinct events, not frames.
-    # A new collision is only counted when contact starts (not while dragging).
-    contact_points = robot_node.getContactPoints(includeDescendants=True)
-    currently_touching = any(cp.point[2] > 0.01 for cp in contact_points)
-    if currently_touching and not in_collision:
-        collision_count += 1  # new collision event started
-    in_collision = currently_touching
-    state = [x, y, yaw, current_v, current_w]
-    v_cmd, w_cmd, trajectories = dwa.plan(state, goal, obstacles)
+        # Collision detection — count distinct events, not frames.
+        # A new collision is only counted when contact starts (not while dragging).
+        contact_points = robot_node.getContactPoints(includeDescendants=True)
+        currently_touching = any(cp.point[2] > 0.01 for cp in contact_points)
+        if currently_touching and not in_collision:
+            collision_count += 1  # new collision event started
+        in_collision = currently_touching
+        state = [x, y, yaw, current_v, current_w]
+        v_cmd, w_cmd, trajectories = dwa.plan(state, goal, obstacles)
 
-    plot_dwa_debug([x, y], goal, obstacles, trajectories)
+        if DEBUG_GRAPH == True:
+            plot_dwa_debug([x, y], goal, obstacles, trajectories)
 
-    current_v = v_cmd
-    current_w = w_cmd
+        current_v = v_cmd
+        current_w = w_cmd
 
-    left_speed, right_speed = compute_wheel_speeds(v_cmd, w_cmd)
-    left_speed = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
-    right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
+        left_speed, right_speed = compute_wheel_speeds(v_cmd, w_cmd)
+        left_speed = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
+        right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
 
-    left_motor.setVelocity(left_speed)
-    right_motor.setVelocity(right_speed)
+        left_motor.setVelocity(left_speed)
+        right_motor.setVelocity(right_speed)
+
+finally:
+    if not goal_reached:
+        save_log(success=False)
