@@ -191,11 +191,6 @@ DEF TURTLEBOT3 TurtleBot3Burger {
     }
   ]
 }
-Robot {
-  name "grid_supervisor"
-  controller "<none>"
-  supervisor TRUE
-}
 CardboardBox {
   translation -0.73 -4.89 0.3
 }
