@@ -10,7 +10,7 @@ X_MIN, X_MAX = -10.0, 10.0
 Z_MIN, Z_MAX = -10.0, 10.0
 
 ROBOT_RADIUS = 0.105
-SAFETY_MARGIN = 0.05
+SAFETY_MARGIN = 0.35
 INFLATION_RADIUS = ROBOT_RADIUS + SAFETY_MARGIN
 # =========================================
 
