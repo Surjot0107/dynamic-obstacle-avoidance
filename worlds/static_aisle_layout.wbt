@@ -4,6 +4,7 @@ EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/project
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/solids/protos/SolidBox.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/robotis/turtlebot/protos/TurtleBot3Burger.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/appearances/protos/Parquetry.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/devices/robotis/protos/RobotisLds01.proto"
 
 WorldInfo {
 }
@@ -179,6 +180,15 @@ SolidBox {
 }
 DEF TURTLEBOT3 TurtleBot3Burger {
   supervisor TRUE
+  extensionSlot [
+    Camera {
+      translation 0 0 0.03
+      width 1280
+      height 720
+    }
+    RobotisLds01 {
+    }
+  ]
 }
 Robot {
   name "grid_supervisor"

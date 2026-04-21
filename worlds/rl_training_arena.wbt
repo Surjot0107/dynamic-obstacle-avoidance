@@ -1,0 +1,105 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/RectangleArena.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/solids/protos/SolidBox.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/robotis/turtlebot/protos/TurtleBot3Burger.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/appearances/protos/Parquetry.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/devices/robotis/protos/RobotisLds01.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/humans/pedestrian/protos/Pedestrian.proto"
+
+WorldInfo {
+}
+Viewpoint {
+  orientation 0.5890052760133935 0.5789852915375138 -0.5637808235578844 2.1294791114632488
+  position -0.44801847781731596 -2.745626481316943 25.42585507454548
+}
+Background {
+  skyColor [
+    0.4 0.7 1
+  ]
+}
+DirectionalLight {
+  ambientIntensity 1
+  direction 0.1 -0.5 0.3
+}
+RectangleArena {
+  floorSize 10 10
+  floorAppearance Parquetry {
+    type "light strip"
+    colorOverride 0.947005 0.838483 0.699229
+  }
+  wallHeight 2
+}
+DEF TURTLEBOT3 TurtleBot3Burger {
+  controller "rl"
+  supervisor TRUE
+  extensionSlot [
+    Camera {
+      translation 0 0 0.03
+      width 1280
+      height 720
+    }
+    RobotisLds01 {
+    }
+  ]
+}
+DEF STATIC_OBS1 SolidBox {
+  translation 0 0 -10
+  name "STATIC_OBS1"
+  size 3 0.5 2
+  appearance PBRAppearance {
+    baseColor 0.45 0.45 0.50
+    roughness 0.6
+    metalness 0
+  }
+}
+DEF STATIC_OBS2 SolidBox {
+  translation 1 0 -10
+  name "STATIC_OBS2"
+  size 0.5 3 2
+  appearance PBRAppearance {
+    baseColor 0.45 0.45 0.50
+    roughness 0.6
+    metalness 0
+  }
+}
+DEF STATIC_OBS3 SolidBox {
+  translation 2 0 -10
+  name "STATIC_OBS3"
+  size 2 0.5 2
+  appearance PBRAppearance {
+    baseColor 0.45 0.45 0.50
+    roughness 0.6
+    metalness 0
+  }
+}
+DEF OBS1 Pedestrian {
+  translation 0 0 -10
+  name "obs1"
+  enableBoundingObject TRUE
+}
+DEF OBS2 Pedestrian {
+  translation 1 0 -10
+  name "obs2"
+  enableBoundingObject TRUE
+}
+DEF OBS3 Pedestrian {
+  translation 2 0 -10
+  name "obs3"
+  enableBoundingObject TRUE
+}
+DEF OBS4 Pedestrian {
+  translation 3 0 -10
+  name "obs4"
+  enableBoundingObject TRUE
+}
+DEF OBS5 Pedestrian {
+  translation 4 0 -10
+  name "obs5"
+  enableBoundingObject TRUE
+}
+DEF ARENA_SUPERVISOR Robot {
+  name "arena_supervisor"
+  supervisor TRUE
+  controller "random_arena_supervisor"
+}
