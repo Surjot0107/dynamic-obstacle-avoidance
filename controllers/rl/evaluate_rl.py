@@ -50,15 +50,18 @@ WHEEL_RADIUS  = 0.033
 WHEEL_BASE    = 0.16
 MAX_LIDAR_RANGE = 3.0
 NUM_LIDAR_BUCKETS = 72
+FRAME_SKIP    = 3
 
 ACTION_TABLE = [
-    (0.8,  0.0),
-    (0.4,  0.0),
-    (0.4,  0.75),
-    (0.4, -0.75),
-    (0.0,  1.5),
-    (0.0, -1.5),
-    (-0.2, 0.0),
+    (0.8,  0.0),    # 0: Fast Forward
+    (0.4,  0.0),    # 1: Slow Forward
+    (0.4,  0.75),   # 2: Soft Left
+    (0.4, -0.75),   # 3: Soft Right
+    (0.2,  1.5),    # 4: Tight Left  (dodge maneuver)
+    (0.2, -1.5),    # 5: Tight Right (dodge maneuver)
+    (0.0,  1.5),    # 6: Hard Left   (pivot)
+    (0.0, -1.5),    # 7: Hard Right  (pivot)
+    (-0.2, 0.0),    # 8: Reverse
 ]
 
 # ── Robot setup ───────────────────────────────────────────────────────────
@@ -228,7 +231,7 @@ def build_observation(x, y, yaw, carrot):
 
     obs = np.concatenate([
         buckets,
-        [min(dist_to_carrot / 5.0, 1.0)],
+        [min(dist_to_carrot / 7.0, 1.0)],
         [angle_to_carrot / math.pi],
         [np.clip(current_v / 0.8, -1.0, 1.0)],
         [np.clip(current_w / 1.5, -1.0, 1.0)],
@@ -280,6 +283,7 @@ def save_log(success):
 
 # ── Main loop ─────────────────────────────────────────────────────────────
 
+step_count = 0
 try:
     while robot.step(TIME_STEP) != -1:
 
@@ -312,20 +316,23 @@ try:
             collision_count += 1
         in_collision = currently_touching
 
-        # RL decision
-        obs = build_observation(x, y, yaw, goal)
-        action, _ = model.predict(obs, deterministic=True)
-        v_cmd, w_cmd = ACTION_TABLE[int(action)]
+        # RL decision — only update every FRAME_SKIP steps to match training dynamics
+        if step_count % FRAME_SKIP == 0:
+            obs = build_observation(x, y, yaw, goal)
+            action, _ = model.predict(obs, deterministic=True)
+            v_cmd, w_cmd = ACTION_TABLE[int(action)]
 
-        current_v = v_cmd
-        current_w = w_cmd
+            current_v = v_cmd
+            current_w = w_cmd
 
-        left_speed, right_speed = compute_wheel_speeds(v_cmd, w_cmd)
-        left_speed  = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
-        right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
+            left_speed, right_speed = compute_wheel_speeds(v_cmd, w_cmd)
+            left_speed  = max(-MAX_SPEED, min(MAX_SPEED, left_speed))
+            right_speed = max(-MAX_SPEED, min(MAX_SPEED, right_speed))
 
         left_motor.setVelocity(left_speed)
         right_motor.setVelocity(right_speed)
+
+        step_count += 1
 
 finally:
     if not goal_reached:
