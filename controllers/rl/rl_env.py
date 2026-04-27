@@ -1,13 +1,29 @@
 """
-Gymnasium environment wrapping a Webots TurtleBot3 Burger for RL training.
+Gymnasium environment for RL training in a corridor-based Webots world.
 
-Key fixes applied:
-  - action_space matches ACTION_TABLE size (9 actions).
-  - DANGER_DIST penalty is calibrated so it never overpowers the goal reward.
-  - Static obstacles are only scattered outside a 2 m exclusion zone around
-    the robot AND the carrot, preventing immediate collisions on episode start.
-  - Carrot is normalised over 7 m (consistent with evaluator).
-  - Phase drop between curricula is mitigated by flushing the env reset.
+Design based on Tai et al. (2017) "Virtual-to-real Deep RL: Continuous
+Control of Mobile Robots for Mapless Navigation" and standard SB3 practices.
+
+KEY DESIGN PRINCIPLES:
+  1. Train in the SAME corridor geometry used for evaluation.
+  2. Use continuous actions (v, w) so the agent can fine-tune its steering.
+  3. CARROT ADVANCES during the episode — matches evaluation exactly.
+     In eval, the carrot slides forward along the A* path every step.
+     In training, when the robot reaches a carrot, a new one appears ahead.
+     Without this, the agent learns to aim at a static point and stop — useless.
+  4. Episode NEVER terminates on carrot reach (only on collision or timeout).
+     This matches evaluation where no single mid-path carrot ends the run.
+  5. Carrot placed at ±60° offset — agent trains on full angular range seen in eval.
+  6. Spawns cover both corridor (59%) AND open area (41%) of the A* path.
+
+Observation: 26-dim
+  - 24 LiDAR sectors (360°/15° each, normalised [0,1])
+  - carrot distance (normalised over 10m)
+  - carrot relative angle (normalised [0,1], 0.5=dead ahead)
+
+Action: Box(2) continuous
+  - action[0] → linear velocity  in [0.0, 0.4] m/s
+  - action[1] → angular velocity in [-1.5, 1.5] rad/s
 """
 
 import gymnasium as gym
@@ -16,73 +32,112 @@ import numpy as np
 import math
 from controller import Supervisor
 
-# ── Simulation constants ──────────────────────────────────────────────────────
-TIME_STEP         = 64
-MAX_SPEED         = 6.28
-WHEEL_RADIUS      = 0.033
-WHEEL_BASE        = 0.16
-MAX_LIDAR_RANGE   = 3.0
-NUM_LIDAR_BUCKETS = 72
-FRAME_SKIP        = 3
-MAX_EPISODE_STEPS = 500
+# ── Simulation ────────────────────────────────────────────────────────────────
+TIME_STEP       = 64             # ms — MUST match evaluate_rl.py
+MAX_SPEED       = 6.28           # motor limit (rad/s)
+WHEEL_RADIUS    = 0.033          # m   — MUST match evaluate_rl.py
+WHEEL_BASE      = 0.16           # m   — MUST match evaluate_rl.py
+MAX_LIDAR_RANGE = 3.5            # m   — MUST match evaluate_rl.py
+N_LIDAR_SECTORS = 24             # — MUST match evaluate_rl.py
+FRAME_SKIP      = 3              # hold action for 192ms — MUST match evaluate_rl.py
+MAX_STEPS       = 300            # episode time limit
+
+# ── Velocity limits ───────────────────────────────────────────────────────────
+V_MAX = 0.4                      # m/s — MUST match evaluate_rl.py action mapping
+W_MAX = 1.5                      # rad/s — MUST match evaluate_rl.py action mapping
+
+# ── Carrot / goal ─────────────────────────────────────────────────────────────
+CARROT_REACH_RADIUS = 0.8        # m — when robot gets this close, advance the carrot
+                                  # Larger than eval GOAL_RADIUS because carrot keeps moving
+CARROT_DIST_MIN     = 1.5        # m — eval lookahead is 2m, so train must include that
+CARROT_DIST_MAX     = 4.0        # m — still some longer ones for generalization
+CARROT_ANGLE_MAX    = math.pi / 2  # ±90° — covers full forward hemisphere
+                                    # The A* path has a 90° turn at corridor entrance
 
 # ── Reward tuning ─────────────────────────────────────────────────────────────
-# Normalised to MAX_LIDAR_RANGE (3 m).  0.1 → 0.30 m physical
-DANGER_DIST  = 0.10   # 0.30 m — any closer gets a strong penalty
-WARNING_DIST = 0.20   # 0.60 m — gentle nudge to keep clearance
+R_CARROT_REACH  = 20.0           # small reward for reaching each chained carrot
+R_COLLISION     = -100.0
+R_PROGRESS      = 30.0           # per metre of progress toward current carrot
+R_TIME          = -0.3           # per step — 300 steps × -0.3 = -90
+R_SPIN_PENALTY  = -0.5           # spinning in place (v≈0, high |w|)
+R_OSCILLATION   = -0.3           # rapid left↔right direction flip
 
-# Forward-sector proximity penalty covers front 120° (24 of 72 buckets).
-# Only the forward arc matters — side walls in corridors should not panic the agent.
-# Webots LDS-01: bucket 0 = forward, increasing counter-clockwise.
-FRONT_BUCKETS_HALF = 12   # 12 right-fwd + 12 left-fwd = ±60° = 120° total
-
-# Warning zone: 0.50 normalized = 1.5 m physical.  Agent must sense it and react early.
-# Danger zone:  0.15 normalized = 0.45 m physical. Imminent contact.
-WARNING_DIST = 0.50
-DANGER_DIST  = 0.15
-
-COLLISION_PENALTY = -500.0
-GOAL_REWARD       = 500.0
-
-# ── Action table ──────────────────────────────────────────────────────────────
-# 9 actions total — action_space MUST match len(ACTION_TABLE).
-ACTION_TABLE = [
-    (0.8,  0.0),    # 0: Fast Forward
-    (0.4,  0.0),    # 1: Slow Forward
-    (0.4,  0.75),   # 2: Soft Left
-    (0.4, -0.75),   # 3: Soft Right
-    (0.2,  1.5),    # 4: Tight Left  (dodge)
-    (0.2, -1.5),    # 5: Tight Right (dodge)
-    (0.0,  1.5),    # 6: Pivot Left
-    (0.0, -1.5),    # 7: Pivot Right
-    (-0.2, 0.0),    # 8: Reverse
+# ── Spawn positions ───────────────────────────────────────────────────────────
+# Covers both corridor (x∈[-1,1]) and open-area (41% of A* path, x∈[-6,-1]).
+SPAWNS = [
+    # ── Inside corridor ───────────────────────────────────────────────────
+    (0.0, -7.0, -math.pi/2),
+    (0.0, -5.0, -math.pi/2),
+    (0.0, -3.0, -math.pi/2),
+    (0.0, -1.0, -math.pi/2),
+    (0.0,  1.0,  math.pi/2),
+    (0.0,  3.0,  math.pi/2),
+    (0.0,  5.0,  math.pi/2),
+    (0.0,  7.0,  math.pi/2),
+    # Reverse direction
+    (0.0, -5.0,  math.pi/2),
+    (0.0, -3.0,  math.pi/2),
+    (0.0, -1.0,  math.pi/2),
+    (0.0,  1.0, -math.pi/2),
+    (0.0,  3.0, -math.pi/2),
+    (0.0,  5.0, -math.pi/2),
+    # Slightly off-center
+    (-0.5, -6.0, -math.pi/2),
+    ( 0.5, -4.0, -math.pi/2),
+    (-0.3, -2.0, -math.pi/2),
+    ( 0.3,  2.0,  math.pi/2),
+    (-0.5,  4.0,  math.pi/2),
+    ( 0.5,  6.0,  math.pi/2),
+    # ── Open area (matches 41% of A* path outside the corridor) ───────────
+    (-6.0, -6.0,  math.pi/4),    # A* start heading NE
+    (-5.0, -5.9,  0.0),
+    (-4.0, -5.9,  0.0),
+    (-3.0, -5.9,  0.0),
+    (-2.0, -5.6,  math.pi/4),
+    (-1.5, -5.6,  0.0),
+    ( 1.0,  1.5,  math.pi/4),    # exiting corridor
+    ( 1.5,  1.7,  math.pi/4),
+    (-5.0, -5.5,  math.pi/2),
+    (-4.0, -5.5, -math.pi/4),
+    (-3.0, -5.0,  math.pi/2),
 ]
-N_ACTIONS = len(ACTION_TABLE)   # 9
 
 
 def compute_wheel_speeds(v, w):
+    """MUST match evaluate_rl.py identically."""
     left  = (v - w * WHEEL_BASE / 2.0) / WHEEL_RADIUS
     right = (v + w * WHEEL_BASE / 2.0) / WHEEL_RADIUS
     return left, right
 
 
-def _safe_random_pos(avoid_xy_list, margin, arena_limit=4.0):
-    """Return a (x, y) that is at least `margin` m from every point in avoid_xy_list."""
-    for _ in range(200):
-        x = float(np.random.uniform(-arena_limit, arena_limit))
-        y = float(np.random.uniform(-arena_limit, arena_limit))
-        ok = all(math.hypot(x - ax, y - ay) >= margin for ax, ay in avoid_xy_list)
-        if ok:
-            return x, y
-    # Fallback: just pick something random (extremely rare)
-    return float(np.random.uniform(-arena_limit, arena_limit)), float(np.random.uniform(-arena_limit, arena_limit))
+def _new_carrot(rx, ry, base_yaw, prev_carrot=None):
+    """
+    Place a new carrot 3-5m ahead.
+    - base_yaw: current robot yaw (used as direction baseline).
+    - prev_carrot: if given AND far enough away, bias toward that direction.
+      This provides continuity when chaining carrots during an episode.
+      If prev_carrot is very close (robot just reached it), atan2 is noisy,
+      so we fall back to base_yaw instead.
+    """
+    if prev_carrot is not None:
+        pdx = prev_carrot[0] - rx
+        pdy = prev_carrot[1] - ry
+        if math.hypot(pdx, pdy) > 0.3:          # only use if direction is reliable
+            base_yaw = math.atan2(pdy, pdx)     # continue roughly toward prev carrot
+        # else: keep base_yaw (current robot heading) as direction
+
+    dist = float(np.random.uniform(CARROT_DIST_MIN, CARROT_DIST_MAX))
+    offset = float(np.random.uniform(-CARROT_ANGLE_MAX, CARROT_ANGLE_MAX))
+    angle = base_yaw + offset
+    cx = float(np.clip(rx + dist * math.cos(angle), -9.0, 9.0))
+    cy = float(np.clip(ry + dist * math.sin(angle), -9.0, 9.0))
+    return np.array([cx, cy])
 
 
 class TurtleBotEnv(gym.Env):
     """
-    Obs:  Box(76,) — 72 LiDAR buckets [0,1], carrot_dist [0,1],
-                      carrot_angle/π [-1,1], v [-1,1], w [-1,1]
-    Act:  Discrete(9)  ← must equal N_ACTIONS
+    Obs: Box(26,) — 24 LiDAR sectors + carrot_dist + carrot_angle
+    Act: Box(2,)  — [v_norm, w_norm] in [-1, 1] → mapped to [0,0.4] and [-1.5,1.5]
     """
     metadata = {"render_modes": []}
 
@@ -90,7 +145,7 @@ class TurtleBotEnv(gym.Env):
         super().__init__()
         self.curriculum_phase = curriculum_phase
 
-        # ── Webots devices ────────────────────────────────────────────────
+        # ── Webots ────────────────────────────────────────────────────────
         self.robot = Supervisor()
 
         self.lidar = self.robot.getDevice("LDS-01")
@@ -103,12 +158,21 @@ class TurtleBotEnv(gym.Env):
         self.left_motor.setVelocity(0.0)
         self.right_motor.setVelocity(0.0)
 
-        # ── Supervisor handles ────────────────────────────────────────────
         self.robot_node  = self.robot.getFromDef("TURTLEBOT3")
         self.trans_field = self.robot_node.getField("translation")
         self.rot_field   = self.robot_node.getField("rotation")
 
-        # Dynamic obstacles (OBS1-OBS5) — Pedestrian PROTO nodes
+        # CardboardBox obstacle references (CB1-CB6)
+        self.cardboard_obs = []
+        for i in range(1, 7):
+            node = self.robot.getFromDef(f"CB{i}")
+            if node:
+                self.cardboard_obs.append({
+                    "node":  node,
+                    "trans": node.getField("translation"),
+                })
+
+        # Dynamic pedestrian references (OBS1-OBS5)
         self.dynamic_obs = []
         for i in range(1, 6):
             node = self.robot.getFromDef(f"OBS{i}")
@@ -118,145 +182,108 @@ class TurtleBotEnv(gym.Env):
                     "trans": node.getField("translation"),
                 })
 
-        # Static obstacles (STATIC_OBS1-STATIC_OBS8) — SolidBox nodes
-        self.static_obs = []
-        for i in range(1, 9):
-            node = self.robot.getFromDef(f"STATIC_OBS{i}")
-            if node:
-                self.static_obs.append({
-                    "node":  node,
-                    "trans": node.getField("translation"),
-                })
-
         # ── Gymnasium spaces ──────────────────────────────────────────────
-        low  = np.concatenate([np.zeros(72), [0.0, -1.0, -1.0, -1.0]])
-        high = np.ones(76)
         self.observation_space = spaces.Box(
-            low=low.astype(np.float32),
-            high=high.astype(np.float32),
+            low=np.zeros(N_LIDAR_SECTORS + 2, dtype=np.float32),
+            high=np.ones(N_LIDAR_SECTORS + 2, dtype=np.float32),
         )
-        self.action_space = spaces.Discrete(N_ACTIONS)
+        self.action_space = spaces.Box(
+            low=np.array([-1.0, -1.0], dtype=np.float32),
+            high=np.array([1.0,  1.0], dtype=np.float32),
+        )
 
-        # ── Episode state ─────────────────────────────────────────────────
-        self.current_v   = 0.0
-        self.current_w   = 0.0
-        self.carrot      = np.array([0.0, 0.0])
-        self.prev_dist   = 0.0
-        self.step_count  = 0
-        self.prev_action = -1
+        # ── State ─────────────────────────────────────────────────────────
+        self.carrot    = np.array([0.0, 0.0])
+        self.prev_dist = 0.0
+        self.step_count = 0
+        self.prev_w     = 0.0
 
-        # First sim tick so sensors initialise
         self.robot.step(TIME_STEP)
-
-    # ── Curriculum ────────────────────────────────────────────────────────────
 
     def set_curriculum_phase(self, phase):
         self.curriculum_phase = phase
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # ── Helpers ───────────────────────────────────────────────────────────
 
     def _get_pose(self):
+        """MUST match evaluate_rl.py get_robot_pose() exactly."""
         pos = self.robot_node.getPosition()
         rot = self.robot_node.getOrientation()
         yaw = math.atan2(rot[3], rot[0])
         return pos[0], pos[1], yaw
 
     def _build_observation(self):
+        """
+        Build 26-dim observation — MUST be bit-for-bit identical to
+        evaluate_rl.py build_observation().
+        """
         x, y, yaw = self._get_pose()
 
+        # LiDAR → N_LIDAR_SECTORS buckets (min reading per sector)
         ranges = self.lidar.getRangeImage()
         n_rays = len(ranges)
-        rpt    = max(1, n_rays // NUM_LIDAR_BUCKETS)
-        buckets = np.ones(NUM_LIDAR_BUCKETS, dtype=np.float32)
-        for b in range(NUM_LIDAR_BUCKETS):
-            start = b * rpt
+        rpt = max(1, n_rays // N_LIDAR_SECTORS)
+        sectors = np.ones(N_LIDAR_SECTORS, dtype=np.float32)
+        for s in range(N_LIDAR_SECTORS):
+            start = s * rpt
             for r in ranges[start:start + rpt]:
                 d = 1.0 if (r == float("inf") or r > MAX_LIDAR_RANGE) else r / MAX_LIDAR_RANGE
-                if d < buckets[b]:
-                    buckets[b] = d
+                if d < sectors[s]:
+                    sectors[s] = d
 
+        # Carrot bearing (same formula as evaluate_rl.py build_observation)
         dx = self.carrot[0] - x
         dy = self.carrot[1] - y
-        dist_to_carrot  = math.hypot(dx, dy)
-        angle_to_carrot = math.atan2(dy, dx) - yaw
-        angle_to_carrot = (angle_to_carrot + math.pi) % (2 * math.pi) - math.pi
+        dist  = math.hypot(dx, dy)
+        angle = math.atan2(dy, dx) - yaw
+        angle = (angle + math.pi) % (2 * math.pi) - math.pi   # wrap to [-π, π]
 
         obs = np.concatenate([
-            buckets,
-            [min(dist_to_carrot / 7.0, 1.0)],
-            [angle_to_carrot / math.pi],
-            [np.clip(self.current_v / 0.8, -1.0, 1.0)],
-            [np.clip(self.current_w / 1.5, -1.0, 1.0)],
+            sectors,
+            [min(dist / 10.0, 1.0)],          # normalised distance [0,1]
+            [(angle / math.pi + 1.0) / 2.0],  # normalised angle [0,1], 0.5=ahead
         ]).astype(np.float32)
 
-        return obs, dist_to_carrot
+        return obs, dist
 
-    def _teleport_obstacles(self, rx, ry, cx, cy):
-        """Place or bury obstacles for this episode.
-
-        Phase 2 guarantee: at least 2 static boxes are placed ON the direct
-        line from the robot to the carrot, at 35 % and 65 % of the distance.
-        The remaining boxes are scattered randomly.  This ensures the agent
-        CANNOT reach the carrot by going straight — it must detour every ep.
-
-        Phase 3: dynamic pedestrians are clustered at the midpoint between
-        the robot and the carrot.
-        """
+    def _place_obstacles(self, rx, ry, cx, cy):
+        """Place cardboard boxes along the robot→carrot line."""
         bury = [0.0, 0.0, -10.0]
 
-        # ── Static (Phase ≥ 2) ────────────────────────────────────────────
-        if self.curriculum_phase >= 2:
-            # Unit vector along robot→carrot
-            dx   = cx - rx
-            dy   = cy - ry
+        if self.curriculum_phase >= 2 and len(self.cardboard_obs) > 0:
+            dx = cx - rx
+            dy = cy - ry
             dist = math.hypot(dx, dy)
-            ux   = dx / max(dist, 1e-4)
-            uy   = dy / max(dist, 1e-4)
+            ux = dx / max(dist, 1e-4)
+            uy = dy / max(dist, 1e-4)
+            px, py = -uy, ux  # perpendicular
 
-            # Perpendicular unit vector (for slight lateral jitter so the
-            # agent can't always pass on the exact same side)
-            px = -uy
-            py =  ux
+            n_boxes = min(len(self.cardboard_obs), max(2, int(dist / 1.5)))
 
-            # Guaranteed blocking positions: 30 % and 70 % along the path.
-            # Minimum distance from robot = 1.2 m so we never spawn inside it.
-            BOX_SAFE_DIST = 1.2  # m from robot start before placing a blocker
-            on_path_positions = []
-            actual_dist = math.hypot(cx - rx, cy - ry)  # may differ from carrot_dist after clamping
-            for frac in [0.30, 0.70]:
-                raw_d = actual_dist * frac
-                safe_d = max(raw_d, BOX_SAFE_DIST)
-                jitter = float(np.random.uniform(-0.4, 0.4))
-                bx = rx + ux * safe_d + px * jitter
-                by = ry + uy * safe_d + py * jitter
-                bx = float(np.clip(bx, -4.0, 4.0))
-                by = float(np.clip(by, -4.0, 4.0))
-                on_path_positions.append((bx, by))
-
-            # Place the 'on-path' blockers first
-            for i, obs in enumerate(self.static_obs[:2]):
-                bx, by = on_path_positions[i]
-                obs["trans"].setSFVec3f([bx, by, 1.0])
-
-            # Remaining boxes are random but must not overlap the blockers
-            avoid = [(rx, ry), (cx, cy)] + on_path_positions
-            for obs in self.static_obs[2:]:
-                sx, sy = _safe_random_pos(avoid, margin=1.0)
-                avoid.append((sx, sy))
-                obs["trans"].setSFVec3f([sx, sy, 1.0])
-
+            for i, obs in enumerate(self.cardboard_obs):
+                if i < n_boxes:
+                    frac = (i + 1) / (n_boxes + 1)
+                    d_along = max(dist * frac, 1.0 + i * 0.5)
+                    lat = float(np.random.uniform(-0.6, 0.6))
+                    bx = float(np.clip(rx + ux * d_along + px * lat, -9.0, 9.0))
+                    by = float(np.clip(ry + uy * d_along + py * lat, -9.0, 9.0))
+                    obs["trans"].setSFVec3f([bx, by, 0.3])
+                    obs["node"].resetPhysics()
+                else:
+                    obs["trans"].setSFVec3f(bury)
+                    obs["node"].resetPhysics()
         else:
-            for obs in self.static_obs:
+            for obs in self.cardboard_obs:
                 obs["trans"].setSFVec3f(bury)
+                obs["node"].resetPhysics()
 
-        # ── Dynamic (Phase ≥ 3) ───────────────────────────────────────────
         if self.curriculum_phase >= 3:
             mid_x = (rx + cx) / 2.0
             mid_y = (ry + cy) / 2.0
             for obs in self.dynamic_obs:
                 pos = [
-                    float(np.clip(np.random.normal(mid_x, 0.8), -4.0, 4.0)),
-                    float(np.clip(np.random.normal(mid_y, 0.8), -4.0, 4.0)),
+                    float(np.clip(np.random.normal(mid_x, 0.3), -0.8, 0.8)),
+                    float(np.clip(np.random.normal(mid_y, 1.5), -8.5, 8.5)),
                     1.25,
                 ]
                 obs["trans"].setSFVec3f(pos)
@@ -266,8 +293,7 @@ class TurtleBotEnv(gym.Env):
                 obs["trans"].setSFVec3f(bury)
                 obs["node"].resetPhysics()
 
-
-    # ── Gymnasium interface ───────────────────────────────────────────────────
+    # ── Gym interface ─────────────────────────────────────────────────────
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -275,41 +301,36 @@ class TurtleBotEnv(gym.Env):
         self.left_motor.setVelocity(0.0)
         self.right_motor.setVelocity(0.0)
 
-        # Random robot spawn, well inside the arena
-        rx   = float(np.random.uniform(-3.5, 3.5))
-        ry   = float(np.random.uniform(-3.5, 3.5))
-        ryaw = float(np.random.uniform(-math.pi, math.pi))
+        # Random spawn
+        idx = np.random.randint(len(SPAWNS))
+        rx, ry, ryaw = SPAWNS[idx]
+        rx += float(np.random.uniform(-0.2, 0.2))
+        ry += float(np.random.uniform(-0.3, 0.3))
 
         self.trans_field.setSFVec3f([rx, ry, 0.01])
         self.rot_field.setSFRotation([0, 0, 1, ryaw])
         self.robot_node.resetPhysics()
 
-        # Carrot: 4.0–8.0 m ahead, ±60° of current yaw
-        # Longer distance gives room for on-path obstacles to sit between robot and goal.
-        carrot_dist  = float(np.random.uniform(4.0, 8.0))
-        carrot_angle = ryaw + float(np.random.uniform(-math.pi / 3, math.pi / 3))
-        cx = float(np.clip(rx + carrot_dist * math.cos(carrot_angle), -4.0, 4.0))
-        cy = float(np.clip(ry + carrot_dist * math.sin(carrot_angle), -4.0, 4.0))
-        self.carrot = np.array([cx, cy])
+        # Initial carrot: 3-5m away at ±60° from spawn heading
+        self.carrot = _new_carrot(rx, ry, ryaw, prev_carrot=None)
 
-        # Scatter obstacles (static ones won't overlap robot/carrot)
-        self._teleport_obstacles(rx, ry, cx, cy)
+        self._place_obstacles(rx, ry, self.carrot[0], self.carrot[1])
 
-        # Flush physics — 3 steps so LiDAR gets fresh readings with the new layout
+        # Settle physics
         for _ in range(3):
             self.robot.step(TIME_STEP)
 
-        self.current_v   = 0.0
-        self.current_w   = 0.0
-        self.step_count  = 0
-        self.prev_action = -1
-
+        self.step_count = 0
+        self.prev_w     = 0.0
         obs, dist = self._build_observation()
         self.prev_dist = dist
         return obs, {}
 
     def step(self, action):
-        v, w = ACTION_TABLE[action]
+        # Action → velocity — MUST match evaluate_rl.py
+        v = float((np.clip(action[0], -1, 1) + 1.0) / 2.0 * V_MAX)
+        w = float(np.clip(action[1], -1, 1) * W_MAX)
+
         l, r = compute_wheel_speeds(v, w)
         self.left_motor.setVelocity(max(-MAX_SPEED, min(MAX_SPEED, l)))
         self.right_motor.setVelocity(max(-MAX_SPEED, min(MAX_SPEED, r)))
@@ -319,55 +340,52 @@ class TurtleBotEnv(gym.Env):
                 obs, _ = self._build_observation()
                 return obs, 0.0, True, False, {}
 
-        self.current_v = v
-        self.current_w = w
         self.step_count += 1
-
         obs, curr_dist = self._build_observation()
+        x, y, _ = self._get_pose()
 
         # ── Reward ────────────────────────────────────────────────────────
         terminated = False
         truncated  = False
 
-        if curr_dist < 0.3:
-            reward     = GOAL_REWARD
+        # Collision check (same threshold as evaluate_rl.py)
+        contacts = self.robot_node.getContactPoints(includeDescendants=True)
+        hit = any(cp.point[2] > 0.01 for cp in contacts)
+
+        if hit:
+            reward     = R_COLLISION
             terminated = True
 
+        elif curr_dist < CARROT_REACH_RADIUS:
+            # ── Robot reached the current carrot ─────────────────────────
+            # Give intermediate reward and advance the carrot.
+            # Pass current yaw as fallback when prev_carrot direction is noisy.
+            reward = R_CARROT_REACH
+            x, y, curr_yaw = self._get_pose()
+            self.carrot = _new_carrot(x, y, curr_yaw, prev_carrot=self.carrot)
+            self._place_obstacles(x, y, self.carrot[0], self.carrot[1])
+            obs, curr_dist = self._build_observation()  # rebuild with new carrot
+
         else:
-            contacts = self.robot_node.getContactPoints(includeDescendants=True)
-            hit = any(cp.point[2] > 0.01 for cp in contacts)
+            # Normal step: progress + shaping
+            reward  = R_PROGRESS * (self.prev_dist - curr_dist)
+            reward += R_TIME
 
-            if hit:
-                reward     = COLLISION_PENALTY
-                terminated = True
-            else:
-                # Progress toward carrot (~10 reward units per metre)
-                reward = (self.prev_dist - curr_dist) * 100.0
+            # Spinning-in-place penalty
+            if v < 0.05 and abs(w) > 0.5:
+                reward += R_SPIN_PENALTY
 
-                # Small time penalty to discourage dawdling
-                reward -= 0.05
+            # Rapid oscillation penalty (left↔right direction flip)
+            if self.prev_w * w < 0 and abs(w) > 0.3:
+                reward += R_OSCILLATION
 
-                # ── Forward-sector proximity penalty ─────────────────────
-                # Only look at the front 120° arc (±60° of heading).
-                # This means side walls in a corridor don’t trigger avoidance
-                # when the agent is heading straight through.
-                fwd_r = obs[:FRONT_BUCKETS_HALF]                          # buckets 0..11
-                fwd_l = obs[NUM_LIDAR_BUCKETS - FRONT_BUCKETS_HALF:]      # buckets 60..71
-                min_fwd = float(min(np.min(fwd_r), np.min(fwd_l)))
+            # Hard floor — guards against physics glitch position jumps
+            reward = max(reward, -15.0)
 
-                if min_fwd < DANGER_DIST:
-                    # Quadratic penalty — grows sharply inside danger zone
-                    reward -= ((DANGER_DIST - min_fwd) ** 2) * 2000.0
-                elif min_fwd < WARNING_DIST:
-                    # Quadratic warning penalty visible from 1.5 m away
-                    # At 1.5m: penalty ≈ 0.  At 0.6m: penalty ≈ -28.  Gradient
-                    # forces the agent to steer while it still has room.
-                    reward -= ((WARNING_DIST - min_fwd) ** 2) * 200.0
+        self.prev_w    = w
+        self.prev_dist = curr_dist
 
-        self.prev_dist   = curr_dist
-        self.prev_action = action
-
-        if not terminated and self.step_count >= MAX_EPISODE_STEPS:
+        if not terminated and self.step_count >= MAX_STEPS:
             truncated = True
 
         return obs, reward, terminated, truncated, {}

@@ -6,6 +6,7 @@ EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/project
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/appearances/protos/Parquetry.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/devices/robotis/protos/RobotisLds01.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/humans/pedestrian/protos/Pedestrian.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/factory/containers/protos/CardboardBox.proto"
 
 WorldInfo {
 }
@@ -23,13 +24,165 @@ DirectionalLight {
   direction 0.1 -0.5 0.3
 }
 RectangleArena {
-  floorSize 10 10
+  floorSize 20 20
   floorAppearance Parquetry {
     type "light strip"
     colorOverride 0.947005 0.838483 0.699229
   }
   wallHeight 2
 }
+# ── Corridor walls (IDENTICAL to eval worlds) ──────────────────────────────
+# These form the same aisle structure as static-obstacle-aisle.wbt
+SolidBox {
+  translation 4 0 1
+  size 6 2 2
+  appearance PBRAppearance {
+    baseColor 0 0 0
+    baseColorMap ImageTexture {
+      url [
+        "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/default/worlds/textures/tagged_wall.jpg"
+      ]
+    }
+    roughness 0.5
+    metalness 0
+  }
+}
+SolidBox {
+  translation 4 -4 1
+  name "box(6)"
+  size 6 2 2
+  appearance PBRAppearance {
+    baseColor 0 0 0
+    baseColorMap ImageTexture {
+      url [
+        "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/default/worlds/textures/tagged_wall.jpg"
+      ]
+    }
+    roughness 0.5
+    metalness 0
+  }
+}
+SolidBox {
+  translation 4 -7.5 1
+  name "box(7)"
+  size 6 1 2
+  appearance PBRAppearance {
+    baseColor 0 0 0
+    baseColorMap ImageTexture {
+      url [
+        "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/default/worlds/textures/tagged_wall.jpg"
+      ]
+    }
+    roughness 0.5
+    metalness 0
+  }
+}
+SolidBox {
+  translation -4 -7.5 1
+  name "box(9)"
+  size 6 1 2
+  appearance PBRAppearance {
+    baseColor 0 0 0
+    baseColorMap ImageTexture {
+      url [
+        "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/default/worlds/textures/tagged_wall.jpg"
+      ]
+    }
+    roughness 0.5
+    metalness 0
+  }
+}
+SolidBox {
+  translation 4 4 1
+  name "box(2)"
+  size 6 2 2
+  appearance PBRAppearance {
+    baseColor 0 0 0
+    baseColorMap ImageTexture {
+      url [
+        "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/default/worlds/textures/tagged_wall.jpg"
+      ]
+    }
+    roughness 0.5
+    metalness 0
+  }
+}
+SolidBox {
+  translation 4 7.5 1
+  name "box(3)"
+  size 6 1 2
+  appearance PBRAppearance {
+    baseColor 0 0 0
+    baseColorMap ImageTexture {
+      url [
+        "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/default/worlds/textures/tagged_wall.jpg"
+      ]
+    }
+    roughness 0.5
+    metalness 0
+  }
+}
+SolidBox {
+  translation -4 7.5 1
+  name "box(5)"
+  size 6 1 2
+  appearance PBRAppearance {
+    baseColor 0 0 0
+    baseColorMap ImageTexture {
+      url [
+        "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/default/worlds/textures/tagged_wall.jpg"
+      ]
+    }
+    roughness 0.5
+    metalness 0
+  }
+}
+SolidBox {
+  translation -4 0 1
+  name "box(1)"
+  size 6 2 2
+  appearance PBRAppearance {
+    baseColor 0 0 0
+    baseColorMap ImageTexture {
+      url [
+        "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/default/worlds/textures/tagged_wall.jpg"
+      ]
+    }
+    roughness 0.5
+    metalness 0
+  }
+}
+SolidBox {
+  translation -4 -4 1
+  name "box(8)"
+  size 6 2 2
+  appearance PBRAppearance {
+    baseColor 0 0 0
+    baseColorMap ImageTexture {
+      url [
+        "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/default/worlds/textures/tagged_wall.jpg"
+      ]
+    }
+    roughness 0.5
+    metalness 0
+  }
+}
+SolidBox {
+  translation -4 4 1
+  name "box(4)"
+  size 6 2 2
+  appearance PBRAppearance {
+    baseColor 0 0 0
+    baseColorMap ImageTexture {
+      url [
+        "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/default/worlds/textures/tagged_wall.jpg"
+      ]
+    }
+    roughness 0.5
+    metalness 0
+  }
+}
+# ── Robot ──────────────────────────────────────────────────────────────────
 DEF TURTLEBOT3 TurtleBot3Burger {
   controller "rl"
   supervisor TRUE
@@ -43,86 +196,32 @@ DEF TURTLEBOT3 TurtleBot3Burger {
     }
   ]
 }
-DEF STATIC_OBS1 SolidBox {
+# ── Movable obstacles (6 CardboardBoxes, start buried) ─────────────────────
+DEF CB1 CardboardBox {
   translation 0 0 -10
-  name "STATIC_OBS1"
-  size 0.6 0.6 1.5
-  appearance PBRAppearance {
-    baseColor 0.8 0.4 0.1
-    roughness 0.8
-    metalness 0
-  }
+  name "cb1"
 }
-DEF STATIC_OBS2 SolidBox {
-  translation 1 0 -10
-  name "STATIC_OBS2"
-  size 0.6 0.6 1.5
-  appearance PBRAppearance {
-    baseColor 0.8 0.4 0.1
-    roughness 0.8
-    metalness 0
-  }
+DEF CB2 CardboardBox {
+  translation 0 1 -10
+  name "cb2"
 }
-DEF STATIC_OBS3 SolidBox {
-  translation 2 0 -10
-  name "STATIC_OBS3"
-  size 0.6 0.6 1.5
-  appearance PBRAppearance {
-    baseColor 0.8 0.4 0.1
-    roughness 0.8
-    metalness 0
-  }
+DEF CB3 CardboardBox {
+  translation 0 2 -10
+  name "cb3"
 }
-DEF STATIC_OBS4 SolidBox {
-  translation 4 0 -10
-  name "STATIC_OBS4"
-  size 0.6 0.6 1.5
-  appearance PBRAppearance {
-    baseColor 0.8 0.4 0.1
-    roughness 0.8
-    metalness 0
-  }
+DEF CB4 CardboardBox {
+  translation 0 3 -10
+  name "cb4"
 }
-DEF STATIC_OBS5 SolidBox {
-  translation 5 0 -10
-  name "STATIC_OBS5"
-  size 0.6 0.6 1.5
-  appearance PBRAppearance {
-    baseColor 0.8 0.4 0.1
-    roughness 0.8
-    metalness 0
-  }
+DEF CB5 CardboardBox {
+  translation 0 4 -10
+  name "cb5"
 }
-DEF STATIC_OBS6 SolidBox {
-  translation 6 0 -10
-  name "STATIC_OBS6"
-  size 0.6 0.6 1.5
-  appearance PBRAppearance {
-    baseColor 0.8 0.4 0.1
-    roughness 0.8
-    metalness 0
-  }
+DEF CB6 CardboardBox {
+  translation 0 5 -10
+  name "cb6"
 }
-DEF STATIC_OBS7 SolidBox {
-  translation 7 0 -10
-  name "STATIC_OBS7"
-  size 0.6 0.6 1.5
-  appearance PBRAppearance {
-    baseColor 0.8 0.4 0.1
-    roughness 0.8
-    metalness 0
-  }
-}
-DEF STATIC_OBS8 SolidBox {
-  translation 8 0 -10
-  name "STATIC_OBS8"
-  size 0.6 0.6 1.5
-  appearance PBRAppearance {
-    baseColor 0.8 0.4 0.1
-    roughness 0.8
-    metalness 0
-  }
-}
+# ── Dynamic pedestrians (5, start buried) ──────────────────────────────────
 DEF OBS1 Pedestrian {
   translation 0 0 -10
   name "obs1"
